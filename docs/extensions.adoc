@@ -1,0 +1,947 @@
+:source-highlighter: coderay
+
+
+== SLF4J 扩展
+
+SLF4J 扩展被打包在 `slf4j-ext.jar`，随着 SLF4J 一起发布。
+
+主要内容包含如下几部分：
+
+* <<bm-profiler,性能分析器（Profiler）>>
+* <<bm-mdcstrlookup,MDCStrLookup>>
+* <<bm-extended,扩展日志（Extended logger）>>
+* <<bm-event,事件日志（Event Logging）>>
+* <<bm-agent,通过Java 代理（agent）来添加日志>>
+
+[[bm-profiler]]
+=== 性能分析器（Profiler）
+
+==== 什么是性能分析器？
+
+根据维基百科（Wikipedia）介绍，link:http://en.wikipedia.org/wiki/Profiler_%28computer_science%29[性能分析（Profiling）]
+是通过搜集程序时的信息，来对程序行为进行的一种研究分析活动，相对于静态的代码分析来说，这
+是一种动态的程序分析。性能分析一般是为了确定程序中哪块部分需要对程序的运行速度或者内存使
+用进行优化。
+
+SLF4J 性能分析器，可以说是一种穷人的分析器，将帮助开发人员搜集性能数据。本质上来讲，性能
+分析器就是由一个或者多个秒表（stopwatches）组成的。秒表由源码中的语句来驱动开始或者结束。
+一个示例也许将这点解释得更明了。
+
+==== 基本示例
+
+
+[source,java,linenums,starts=32]
+.示例: 性能分析器的使用: http://www.slf4j.org/xref-test/org/slf4j/profiler/BasicProfilerDemo.html[BasicProfilerDemo]
+----
+32  public class BasicProfilerDemo {
+33
+34    public static void main(String[] args) {
+35      // create a profiler called "BASIC"
+36      Profiler profiler = new Profiler("BASIC");
+37      profiler.start("A");
+38      doA();
+39
+40      profiler.start("B");
+41      doB();
+42
+43      profiler.start("OTHER");
+44      doOther();
+45      profiler.stop().print();
+46    }
+----
+
+Running the above example will output the following output.
+
+运行上面的示例将输出如下内容：
+
+[source]
+----
++ Profiler [BASIC]
+|-- elapsed time                      [A]   220.487 milliseconds.
+|-- elapsed time                      [B]  2499.866 milliseconds.
+|-- elapsed time                  [OTHER]  3300.745 milliseconds.
+|-- Total                         [BASIC]  6022.568 milliseconds.
+----
+
+Instantiating a profiler starts a global stopwatch. Each call to the start()
+method starts a new and named stopwatch. In addition to starting a named stopwatch,
+the start() method also causes the previous stopwatch to stop. Thus, the call to
+profiler.start("A") starts a stopwatch named "A". The subsequent call to
+profiler.start("B") starts stopwatch "B" and simultaneously stops the stopwatch
+named "A". Invoking the stop() on a profiler stops the last stopwatch as well as
+the global stopwatch which was started when the profiler was instantiated.
+
+实例化一个性能分析器就启动了一个全局秒表。每次调用 `start()` 方法将启动一个新的被命名了
+的秒表。除了启动一个命名了的秒表， `start()` 方法还将引起上一个秒表停止。因此，调用 `profiler.start("A")`
+时，启动了一个被命名为 *A* 的秒表。随后，调用 `profiler.start("B")` 将启动秒表 *B*，
+并且同时将停止秒表 *A*。在一个性能分析器实例上调用 `stop()`，将停止最后一个秒表和伴随分
+析器实例化而启动起来的全局秒表。
+
+==== 分析器嵌套
+
+Profilers can also be nested. By nesting profilers, it is possible to measure a
+task which itself has subtasks that need to be timed and measured.
+
+分析器也可以嵌套。通过嵌套的分析器，不仅可以测量一个任务的耗时，还可以测量需要策略的子任务的耗时。
+
+Starting a nested profiler will stop any previously started stopwatch or nested
+profiler associated with the parent profiler.
+
+启动嵌套的分析器将停止以前所有已经启动的秒表或者关联到上级分析器。
+
+Often times, the subtask is implemented by a different class as the class hosting
+the parent profiler. Using the ProfilerRegistry is a convenient way of passing a
+nested profiler to an object outside the current object. Each thread has its own
+profiler registry which can be retrieved by invoking the getThreadContextInstance() method.
+
+通常情况下，子任务会被不同的类来实现，并且托管着上级分析器。使用 `ProfilerRegistry` 是
+一种方便地将嵌套分析器从当前对象传递到其他对象的方式。每一个线程都有自己的分析器注册表
+（profiler registry），可以通过调用 `getThreadContextInstance()` 方法来获取。
+
+[source,java]
+.示例: link:http://www.slf4j.org/xref-test/org/slf4j/profiler/NestedProfilerDemo.html[NestedProfilerDemo]
+----
+33  public class NestedProfilerDemo {
+34
+35    public static void main(String[] args) {
+36      // create a profiler called "DEMO"
+37      Profiler profiler = new Profiler("DEMO");
+38
+39      // register this profiler in the thread context's profiler registry
+40      ProfilerRegistry profilerRegistry = ProfilerRegistry.getThreadContextInstance();
+41      profiler.registerWith(profilerRegistry);
+42
+43      // start a stopwatch called "RANDOM"
+44      profiler.start("RANDOM");
+45      RandomIntegerArrayGenerator riaGenerator = new RandomIntegerArrayGenerator();
+46      int n = 1000*1000;
+47      int[] randomArray = riaGenerator.generate(n);
+48
+49      // create and start a nested profiler called "SORT_AND_PRUNE"
+50      // By virtue of its parent-child relationship with the "DEMO"
+51      // profiler, and the previous registration of the parent profiler,
+52      // this nested profiler will be automatically registered
+53      // with the thread context's profiler registry
+54      profiler.startNested(SortAndPruneComposites.NESTED_PROFILER_NAME);
+55
+56      SortAndPruneComposites pruner = new SortAndPruneComposites(randomArray);
+57      pruner.sortAndPruneComposites();
+58
+59      // stop and print the "DEMO" printer
+60      profiler.stop().print();
+61    }
+62  }
+----
+
+Here is the relevant excerpt from the link:http://www.slf4j.org/xref-test/org/slf4j/profiler/SortAndPruneComposites.html[SortAndPruneComposites] class.
+
+这是引用的相关类：link:http://www.slf4j.org/xref-test/org/slf4j/profiler/SortAndPruneComposites.html[SortAndPruneComposites]。
+
+[source,java]
+----
+6   public class SortAndPruneComposites {
+7
+8     static String NESTED_PROFILER_NAME = "SORT_AND_PRUNE";
+9
+10    final int[] originalArray;
+11    final int originalArrayLength;
+12
+13    public SortAndPruneComposites(int[] randomArray) {
+14      this.originalArray = randomArray;
+15      this.originalArrayLength = randomArray.length;
+16
+17    }
+18
+19    public int[] sortAndPruneComposites() {
+20      // retrieve previously registered profiler named "SORT_AND_PRUNE"
+21      ProfilerRegistry profilerRegistry = ProfilerRegistry.getThreadContextInstance();
+22      Profiler sortProfiler = profilerRegistry.get(NESTED_PROFILER_NAME);
+23
+24      // start a new stopwatch called SORT
+25      sortProfiler.start("SORT");
+26      int[] sortedArray = sort();
+27      // start a new stopwatch called PRUNE_COMPOSITES
+28      sortProfiler.start("PRUNE_COMPOSITES");
+29      int result[] = pruneComposites(sortedArray);
+30
+31      return result;
+32    }
+----
+
+On a Dual-Core Intel CPU clocked at 3.2 GHz, running the ProfilerDemo application
+ yields the following output:
+
+在双核并且主频为 3.2G 赫兹的 Intel CPU 上，运行这个 `ProfilerDemo` 产生如下输出：
+
+[source]
+----
++ Profiler [DEMO]
+|-- elapsed time                 [RANDOM]    70.524 milliseconds.
+|---+ Profiler [SORT_AND_PRUNE]
+    |-- elapsed time                   [SORT]   665.281 milliseconds.
+    |-- elapsed time       [PRUNE_COMPOSITES]  5695.515 milliseconds.
+    |-- Subtotal             [SORT_AND_PRUNE]  6360.866 milliseconds.
+|-- elapsed time         [SORT_AND_PRUNE]  6360.866 milliseconds.
+|-- Total                          [DEMO]  6433.922 milliseconds.
+----
+
+From the above, we learn that generating 1'000'000 random integers takes 70 ms,
+sorting them 665 ms, and pruning the composite (non-prime) integers 5695 ms, for
+a grand total of 6433 ms. Given that pruning composites takes most of the CPU
+effort, any future optimizations efforts would be directed at the pruning part.
+
+从上面的例子中，我们可以得出产生 1 000 000 个随机整数需要消耗 70 毫秒，排序需要 665 毫秒，
+裁剪 5695 毫秒，总计耗时 6433 毫秒。从这里输出可以看出，裁剪计算占用了最多的 CPU 时间，
+将来任何优化都将直接在裁剪部分进行。
+
+With just a few well-placed profiler calls we were able to identify hot-spots in
+our application. Also note that passing a profiler to a target class could be
+achieved by registering it in a profiler registry and then retrieving it in the
+target class.
+
+通过放置一些恰当的分析器调用，我们就可以识别出我们程序中的热点（hot-spot）。同时，我们
+也应该注意到，为了将一个分析器传递到目标类，我们可以通过将分析器注册到注册表（registry），
+然后就可以在目标类中获取出来。
+
+==== Printing using a logger
+
+==== 使用日志输出
+
+Invoking profiler.print will always print the output on the console. If you wish
+to leave the profiler code in production, then you probably need more control
+over the output destination. This can be accomplished by associating a logger of
+your choice with a profiler.
+
+调用 `profiler.print()` 将在控制台中打印出结果。如果你想在生成环境中也保留分析器，那么
+你也许需要控制输出目的地。你可以通过将一个分析器关联到你选择的一个日志上来完成。
+
+After you have associated a logger with a profiler, you would invoke the log()
+method instead of print() previously, as the next example illustrates.
+
+当你将一个分析器和一个日志进行关联后，你只需要通过调用 `log()` 来代替上面调用 `print()`，
+下面是演示示例：
+
+[source,java]
+.关联到日志上的分析器: linke:http://www.slf4j.org/xref-test/org/slf4j/profiler/NestedProfilerDemo2.html[NestedProfilerDemo2]
+----
+17  public class NestedProfilerDemo2 {
+18
+19    static Logger logger = LoggerFactory.getLogger(NestedProfilerDemo2.class);
+20
+21    public static void main(String[] args) {
+22      Profiler profiler = new Profiler("DEMO");
+23      // associate a logger with the profiler
+24      profiler.setLogger(logger);
+25
+26      ProfilerRegistry profilerRegistry = ProfilerRegistry.getThreadContextInstance();
+27      profiler.registerWith(profilerRegistry);
+28
+29      profiler.start("RANDOM");
+30      RandomIntegerArrayGenerator riaGenerator = new RandomIntegerArrayGenerator();
+31      int n = 10*1000;
+32      int[] randomArray = riaGenerator.generate(n);
+33
+34      profiler.startNested(SortAndPruneComposites.NESTED_PROFILER_NAME);
+35
+36      SortAndPruneComposites pruner = new SortAndPruneComposites(randomArray);
+37      pruner.sortAndPruneComposites();
+38
+39      // stop and log
+40      profiler.stop().log();
+41    }
+42  }
+----
+
+The output generated by this example will depend on the logging environment, but
+should be very similar to the output generated by the previous NestedProfilerDemo example.
+
+上面例子的输出依赖日志环境，但是和上面的 `NestedProfilerDemo` 例子的输出很类似。
+
+The log() method logs at level DEBUG using a marker named "PROFILER".
+
+`log()` 方法在 `DEBUG` 基本输出，并且使用 *PROFILER* 作为标记。
+
+If your logging system supports markers, e.g. logback, you could specifically
+enable or disable output generated by SLF4J profilers. Here is logback configuration
+file disabling output for any logging event bearing the "PROFILER" marker, even
+if the logger used by the profiler is enabled for the debug level.
+
+如果你的日志系统支持标记（marker），例如 logback，你可以明确地启用或者禁用 SLF4J 分析器
+输出。下面是 logback 配置文件，禁用任何匹配 *PROFILER* 标记的日志，即使 `DEBUG` 级别
+的日志可以输出。
+
+[source,xml]
+.logback configuration disabling logging from profilers, and only profilers
+.仅仅禁用分析器日志的 logback 配置
+----
+<configuration>
+
+  <turboFilter class="ch.qos.logback.classic.turbo.MarkerFilter">
+    <Marker>PROFILER</Marker>
+    <OnMatch>DENY</OnMatch>
+  </turboFilter>
+
+  <appender name="STDOUT"
+    class="ch.qos.logback.core.ConsoleAppender">
+    <layout class="ch.qos.logback.classic.PatternLayout">
+      <Pattern>%-5level %logger{36} - %msg%n</Pattern>
+    </layout>
+  </appender>
+
+  <root>
+    <level value="DEBUG" />
+    <appender-ref ref="STDOUT" />
+  </root>
+</configuration>
+----
+
+[[bm-mdcstrlookup]]
+=== MDCStrLookup
+
+StrLookup is a class defined in Apache Commons Lang. It is used in conjunction
+with the StrSubstitutor class to allow Strings to have tokens in the Strings
+dynamically replaced at run time. There are many cases where it is desirable to
+merge the values for keys in the SLF4J MDC into Strings. MDCStrLookup makes this possible.
+
+`StrLookup` 是一个定义在 Apache Commons Lang 中的类。It is used in conjunction
+with the StrSubstitutor class to allow Strings to have tokens in the Strings
+dynamically replaced at run time. There are many cases where it is desirable to
+merge the values for keys in the SLF4J MDC into Strings. MDCStrLookup makes this possible.
+
+Apache Commons Configuration provides a ConfigurationInterpolator class. This
+class allows new StrLookups to be registered and the values can then be used to
+merge with both the configuration of Commons Configuration as well as the
+configuration files it manages.
+
+Apache Commons Configuration 提供了一个类： `ConfigurationInterpolator`。
+
+StrLookup obviously has a dependency on Commons Lang. The Maven pom.xml for
+slf4j-ext lists this dependency as optional so that those wishing to use other
+extensions are not required to unnecessarily package the commons lang jar.
+Therefore, when using MDCStrLookup the dependency for commons-lang must be
+explicitly declared along with slf4j-ext.
+
+
+[[bm-extended]]
+=== 扩展日志（Extended logger）
+
+The XLogger class provides a few extra logging methods that are quite useful for
+following the execution path of applications. These methods generate logging
+events that can be filtered separately from other debug logging. Liberal use of
+these methods is encouraged as the output has been found to
+
+`XLogger`类提供了一些额外的日志方法，执行路径后的程序非常有用。这些方法产生日志事件，可
+以从其他的调试日志中过滤出来。鼓励使用这些方法，输出可以
+
+* aid in problem diagnosis in development without requiring a debug session
+* 在开发环境下，有助于在没有调试会话时诊断问题。
+* aid in problem diagnosis in production where no debugging is possible
+* 在生成环境下，即使没有调试，诊断问题也成为可能。
+* help educate new developers in learning the application.
+* 帮助培训新的开发人员学习应用。
+
+The two most used methods are the entry() and exit() methods. entry() should be
+placed at the beginning of methods, except perhaps for simple getters and setters.
+entry() can be called passing from 0 to 4 parameters. Typically these will be
+parameters passed to the method. The entry() method logs with a level of TRACE
+and uses a Marker with a name of "ENTER" which is also a "FLOW" Marker.
+
+最常用的是 `entry()` 和 `exit()` 方法。`entry()` 应该放在方法的开始部分，除了简单的 Getter
+和 Setter 方法。`entry()` 可以通过 0 到 4 个参数来调用。代表性的一种情况是，它们是传递
+给这个方法的参数。`entry()` 方法使用 `TRACE` 级别的日志，并且使用一个名字为 *ENTER* 的标记，
+这也是一个 *FLOW* 标记。
+
+The exit() method should be placed before any return statement or as the last
+statement of methods without a return. exit() can be called with or without a
+parameter. Typically, methods that return void will use exit() while methods
+that return an Object will use exit(Object obj). The entry() method logs with a
+level of TRACE and uses a Marker with a name of "EXIT" which is also a "FLOW" Marker.
+
+`exit()` 方法应该放置在任何返回语句之前，或者没有返回的方法的最后一句。`exit()` 可以通过
+一个或者零个参数来调用。具有代表性的是，如果方法返回为 `void`，则使用 `exit()`；如果返
+回一个对象，则使用 `exit(Object obj)`。`entry()` 方法使用 `TRACE` 基本的日志，并且使用
+一个名字为 *EXIT* 的标记，这也是一个 *FLOW* 标记。
+
+The throwing() method can be used by an application when it is throwing an
+exception that is unlikely to be handled, such as a RuntimeException. This will
+insure that proper diagnostics are available if needed. The logging event
+generated will have a level of ERROR and will have an associated Marker with a
+name of "THROWING" which is also an "EXCEPTION" Marker.
+
+`throwing()` 方法可以用于处理程序抛出而又不可能处理异常，例如 `RuntimeException`。这
+可以明显确保适当诊断信息是可用的，如果需要的话。这个日志事件发生将使用 `ERROR` 基本的日志，
+并且和命名为 *THROWING* 的标记关联，这也是一个 *EXCEPTION* 标记
+
+The catching() method can be used by an application when it catches an Exception
+that it is not going to rethrow, either explicitly or attached to another
+Exception. The logging event generated will have a level of ERROR and will have
+an associated Marker with a name of "CATCHING" which is also an "EXCEPTION" Marker.
+
+`catching()` 方法可以被程序用于它捕获一个异常，而且又不想再次抛出，可以是明确的 `Exception`
+或者其他异常。这个日志事件发生将使用 `ERROR` 基本的日志，并且和命名为 *CATCHING* 的标
+记关联，这也是一个 *EXCEPTION* 标记
+
+By using these extended methods applications that standardize on SLF4J can be
+assured that they will be able to perform diagnostic logging in a standardized manner.
+
+通过使用这些扩展方法，规范了 SLF4J 的使用，程序可以确信，它们可以以一种标准的方式来展示诊断日志。
+
+Note that XLogger instances are obtained to through the XLoggerFactory utility class.
+
+注意，`XLogger` 实例可以通过 `XLoggerFactory` 工具类来获得。
+
+The following example shows a simple application using these methods in a fairly
+typical manner. The throwing() method is not present since no Exceptions are
+explicitly thrown and not handled.
+
+接下来的例子演示了一个简单程序以相当典型的方式使用这些方法。 `throwing()` 方法没有展示，
+这是因为没有异常要并且抛出并且不处理。
+
+[source,java]
+----
+package com.test;
+
+import org.slf4j.ext.XLogger;
+import org.slf4j.ext.XLoggerFactory;
+
+import java.util.Random;
+
+public class TestService {
+  private XLogger logger = XLoggerFactory.getXLogger(TestService.class
+      .getName());
+
+  private String[] messages = new String[] { "Hello, World",
+      "Goodbye Cruel World", "You had me at hello" };
+
+  private Random rand = new Random(1);
+
+  public String retrieveMessage() {
+    logger.entry();
+
+    String testMsg = getMessage(getKey());
+
+    logger.exit(testMsg);
+    return testMsg;
+  }
+
+  public void exampleException() {
+    logger.entry();
+    try {
+      String msg = messages[messages.length];
+      logger.error("An exception should have been thrown");
+    } catch (Exception ex) {
+      logger.catching(ex);
+    }
+    logger.exit();
+  }
+
+  public String getMessage(int key) {
+    logger.entry(key);
+
+    String value = messages[key];
+
+    logger.exit(value);
+    return value;
+  }
+
+  private int getKey() {
+    logger.entry();
+    int key = rand.nextInt(messages.length);
+    logger.exit(key);
+    return key;
+  }
+}
+----
+
+This test application uses the preceding service to generate logging events.
+
+这些测试应用使用了前面的服务来产生日志事件。
+
+[source,java]
+----
+package com.test;
+
+public class App {
+  public static void main( String[] args )    {
+    TestService service = new TestService();
+    service.retrieveMessage();
+    service.retrieveMessage();
+    service.exampleException();
+  }
+}
+----
+
+The configuration below will cause all output to be routed to target/test.log.
+The pattern for the FileAppender includes the class name, line number and method
+name. Including these in the pattern are critical for the log to be of value.
+
+下面的配置将所有的输出路由到 `target/test.log`。提供给 `FileAppender` 的模式，包含了类名，
+行号以及方法名。在模式中包含这些内容对于日志的值来说是非常关键的。
+
+[source,xml]
+----
+<?xml version='1.0' encoding='UTF-8'?>
+<configuration>
+  <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+    <filter class="ch.qos.logback.classic.filter.LevelFilter">
+      <level>ERROR</level>
+      <onMatch>ACCEPT</onMatch>
+      <onMismatch>DENY</onMismatch>
+    </filter>
+    <layout class="ch.qos.logback.classic.PatternLayout">
+      <Pattern>%d{HH:mm:ss.SSS} %-5level %class{36}:%L %M - %msg%n</Pattern>
+    </layout>
+  </appender>
+  <appender name="log" class="ch.qos.logback.core.FileAppender">
+    <File>target/test.log</File>
+    <Append>false</Append>
+    <layout class="ch.qos.logback.classic.PatternLayout">
+      <Pattern>%d{HH:mm:ss.SSS} %-5level %class{36}:%L %M - %msg%n</Pattern>
+    </layout>
+  </appender>
+
+  <root>
+    <level value="trace" />
+    <appender-ref ref="log" />
+  </root>
+</configuration>
+----
+
+Here is the output that results from the Java classes and configuration above.
+
+下面是上面 Java 类以及配置文件的输出结果。
+
+[source]
+----
+00:07:57.725 TRACE com.test.TestService:22 retrieveMessage - entry
+00:07:57.738 TRACE com.test.TestService:57 getKey - entry
+00:07:57.739 TRACE com.test.TestService:59 getKey - exit with (0)
+00:07:57.741 TRACE com.test.TestService:47 getMessage - entry with (0)
+00:07:57.741 TRACE com.test.TestService:51 getMessage - exit with (Hello, World)
+00:07:57.742 TRACE com.test.TestService:26 retrieveMessage - exit with (Hello, World)
+00:07:57.742 TRACE com.test.TestService:22 retrieveMessage - entry
+00:07:57.742 TRACE com.test.TestService:57 getKey - entry
+00:07:57.743 TRACE com.test.TestService:59 getKey - exit with (1)
+00:07:57.745 TRACE com.test.TestService:47 getMessage - entry with (1)
+00:07:57.745 TRACE com.test.TestService:51 getMessage - exit with (Goodbye Cruel World)
+00:07:57.746 TRACE com.test.TestService:26 retrieveMessage - exit with (Goodbye Cruel World)
+00:07:57.746 TRACE com.test.TestService:32 exampleException - entry
+00:07:57.750 ERROR com.test.TestService:40 exampleException - catching
+java.lang.ArrayIndexOutOfBoundsException: 3
+  at com.test.TestService.exampleException(TestService.java:35)
+  at com.test.AppTest.testApp(AppTest.java:39)
+  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+  at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+  at java.lang.reflect.Method.invoke(Method.java:585)
+  at junit.framework.TestCase.runTest(TestCase.java:154)
+  at junit.framework.TestCase.runBare(TestCase.java:127)
+  at junit.framework.TestResult$1.protect(TestResult.java:106)
+  at junit.framework.TestResult.runProtected(TestResult.java:124)
+  at junit.framework.TestResult.run(TestResult.java:109)
+  at junit.framework.TestCase.run(TestCase.java:118)
+  at junit.framework.TestSuite.runTest(TestSuite.java:208)
+  at junit.framework.TestSuite.run(TestSuite.java:203)
+  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+  at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+  at java.lang.reflect.Method.invoke(Method.java:585)
+  at org.apache.maven.surefire.junit.JUnitTestSet.execute(JUnitTestSet.java:213)
+  at org.apache.maven.surefire.suite.AbstractDirectoryTestSuite.executeTestSet(AbstractDirectoryTestSuite.java:140)
+  at org.apache.maven.surefire.suite.AbstractDirectoryTestSuite.execute(AbstractDirectoryTestSuite.java:127)
+  at org.apache.maven.surefire.Surefire.run(Surefire.java:177)
+  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+  at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+  at java.lang.reflect.Method.invoke(Method.java:585)
+  at org.apache.maven.surefire.booter.SurefireBooter.runSuitesInProcess(SurefireBooter.java:338)
+  at org.apache.maven.surefire.booter.SurefireBooter.main(SurefireBooter.java:997)
+00:07:57.750 TRACE com.test.TestService:42 exampleException - exit
+----
+
+Simply changing the root logger level to DEBUG in the example above will reduce
+the output considerably.
+
+在上面的例子中，只需要简单地将 `root` 日志的级别修改为 `DEBUG`，将大幅减少输出内容。
+
+[source]
+----
+00:28:06.004 ERROR com.test.TestService:40 exampleException - catching
+java.lang.ArrayIndexOutOfBoundsException: 3
+  at com.test.TestService.exampleException(TestService.java:35)
+  at com.test.AppTest.testApp(AppTest.java:39)
+  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+  at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+  at java.lang.reflect.Method.invoke(Method.java:585)
+  at junit.framework.TestCase.runTest(TestCase.java:154)
+  at junit.framework.TestCase.runBare(TestCase.java:127)
+  at junit.framework.TestResult$1.protect(TestResult.java:106)
+  at junit.framework.TestResult.runProtected(TestResult.java:124)
+  at junit.framework.TestResult.run(TestResult.java:109)
+  at junit.framework.TestCase.run(TestCase.java:118)
+  at junit.framework.TestSuite.runTest(TestSuite.java:208)
+  at junit.framework.TestSuite.run(TestSuite.java:203)
+  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+  at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+  at java.lang.reflect.Method.invoke(Method.java:585)
+  at org.apache.maven.surefire.junit.JUnitTestSet.execute(JUnitTestSet.java:213)
+  at org.apache.maven.surefire.suite.AbstractDirectoryTestSuite.executeTestSet(AbstractDirectoryTestSuite.java:140)
+  at org.apache.maven.surefire.suite.AbstractDirectoryTestSuite.execute(AbstractDirectoryTestSuite.java:127)
+  at org.apache.maven.surefire.Surefire.run(Surefire.java:177)
+  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+  at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+  at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+  at java.lang.reflect.Method.invoke(Method.java:585)
+  at org.apache.maven.surefire.booter.SurefireBooter.runSuitesInProcess(SurefireBooter.java:338)
+  at org.apache.maven.surefire.booter.SurefireBooter.main(SurefireBooter.java:997)
+----
+
+[[bm-event]]
+=== 事件日志（Event Logging）
+
+The EventLogger class provides a simple mechanism for logging events that occur
+in an application. While the EventLogger is useful as a way of initiating events
+that should be processed by an audit Logging system, it does not implement any
+of the features an audit logging system would require such as guaranteed delivery.
+
+`EventLogger` 类提供了一个简单的机制，这个机制可用于记录应用中发生的事件。
+
+The recommended way of using the EventLogger in a typical web application is
+to populate the SLF4J MDC with data that is related to the entire lifespan of
+the request such as the user's id, the user's ip address, the product name, etc.
+This can easily be done in a servlet filter where the MDC can also be cleared at
+the end of the request. When an event that needs to be recorded occurs an
+EventData object should be created and populated. Then call EventLogger.logEvent(data)
+where data is a reference to the EventData object.
+
+`EventLogger` 的推荐使用方式，例如在网站应中，将数据填入到 SLF4J 的 `MDC`，这里数据贯
+穿一个请求的始末，这些数据中包含用户 ID，用户的 IP 地址，商品名称等等。这些可以非常容易
+地在 Servlet 过滤器（filter）中完成，在这里 `MDC` 也可以请求结束后清理掉。当一个事件需
+要被记录并重现时，一个 `EventData` 应该被创建并发布。然后调用 `EventLogger.logEvent(data)`
+这里 `data` 就是指向 `EventData` 对象的引用。
+
+[source,java]
+----
+import org.slf4j.MDC;
+import org.apache.commons.lang.time.DateUtils;
+
+import javax.servlet.Filter;
+import javax.servlet.FilterConfig;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.FilterChain;
+import javax.servlet.http.HttpSession;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.util.TimeZone;
+
+public class RequestFilter implements Filter
+{
+  private FilterConfig filterConfig;
+  private static String TZ_NAME = "timezoneOffset";
+
+  public void init(FilterConfig filterConfig) throws ServletException {
+    this.filterConfig = filterConfig;
+  }
+
+  /**
+   * Sample filter that populates the MDC on every request.
+   */
+  public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse,
+                       FilterChain filterChain) throws IOException, ServletException {
+    HttpServletRequest request = (HttpServletRequest)servletRequest;
+    HttpServletResponse response = (HttpServletResponse)servletResponse;
+    MDC.put("ipAddress", request.getRemoteAddr());
+    HttpSession session = request.getSession(false);
+    TimeZone timeZone = null;
+    if (session != null) {
+      // Something should set this after authentication completes
+      String loginId = (String)session.getAttribute("LoginId");
+      if (loginId != null) {
+        MDC.put("loginId", loginId);
+      }
+      // This assumes there is some javascript on the user's page to create the cookie.
+      if (session.getAttribute(TZ_NAME) == null) {
+        if (request.getCookies() != null) {
+          for (Cookie cookie : request.getCookies()) {
+            if (TZ_NAME.equals(cookie.getName())) {
+              int tzOffsetMinutes = Integer.parseInt(cookie.getValue());
+              timeZone = TimeZone.getTimeZone("GMT");
+              timeZone.setRawOffset((int)(tzOffsetMinutes * DateUtils.MILLIS_PER_MINUTE));
+              request.getSession().setAttribute(TZ_NAME, tzOffsetMinutes);
+              cookie.setMaxAge(0);
+              response.addCookie(cookie);
+            }
+          }
+        }
+      }
+    }
+    MDC.put("hostname", servletRequest.getServerName());
+    MDC.put("productName", filterConfig.getInitParameter("ProductName"));
+    MDC.put("locale", servletRequest.getLocale().getDisplayName());
+    if (timeZone == null) {
+      timeZone = TimeZone.getDefault();
+    }
+    MDC.put("timezone", timeZone.getDisplayName());
+    filterChain.doFilter(servletRequest, servletResponse);
+    MDC.clear();
+  }
+
+  public void destroy() {
+  }
+}
+----
+
+Sample class that uses EventLogger.
+
+使用 `EventLogger` 的示例类。
+
+[source,java]
+----
+import org.slf4j.ext.EventData;
+import org.slf4j.ext.EventLogger;
+
+import java.util.Date;
+import java.util.UUID;
+
+public class MyApp {
+
+  public String doFundsTransfer(Account toAccount, Account fromAccount, long amount) {
+    toAccount.deposit(amount);
+    fromAccount.withdraw(amount);
+    EventData data = new EventData();
+    data.setEventDateTime(new Date());
+    data.setEventType("transfer");
+    String confirm = UUID.randomUUID().toString();
+    data.setEventId(confirm);
+    data.put("toAccount", toAccount);
+    data.put("fromAccount", fromAccount);
+    data.put("amount", amount);
+    EventLogger.logEvent(data);
+    return confirm;
+  }
+}
+----
+
+The EventLogger class uses a Logger named "EventLogger". EventLogger uses a
+logging level of INFO. The following shows a configuration using Logback.
+
+`EventLogger` 类使用一个被命名为 `EventLogger` 的日志。`EventLogger` 使用 `INFO` 级别
+的日志。下面是一个使用 Logback 的配置。
+
+[source,xml]
+----
+<configuration>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <layout class="ch.qos.logback.classic.PatternLayout">
+      <Pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</Pattern>
+    </layout>
+  </appender>
+
+  <appender name="events" class="ch.qos.logback.core.ConsoleAppender">
+    <layout class="ch.qos.logback.classic.PatternLayout">
+      <Pattern>%d{HH:mm:ss.SSS} %X - %msg%n</Pattern>
+    </layout>
+  </appender>
+
+  <logger name="EventLogger" additivity="false">
+    <level value="INFO"/>
+    <appender appender-ref="events"/>
+  </logger>
+
+  <root level="DEBUG">
+    <appender-ref ref="STDOUT" />
+  </root>
+
+</configuration>
+----
+
+[[bm-agent]]
+=== 通过Java 代理（agent）来添加日志
+
+NOTE: BETA RELEASE, NOT PRODUCTION QUALITY
+
+NOTE: Beta版，未到达生成品质
+
+Quickstart for the impatient:
+
+入门概要：
+
+. Use Java 5 or later.
+. 使用 Java 5 或者更高。
+. Download slf4j-ext-1.7.19.jar and javassist.jar, and put them both in the same directory.
+. 下载 `slf4j-ext-1.7.19.jar` 和 `javassist.jar`，并将它们放置在同一个目录中。
+. Ensure your application is properly configured with slf4j-api-1.7.19.jar and a
+suitable backend.
+. 确保你的应用已经恰当地配置 `slf4j-api-1.7.19.jar` 和一个适当的后端。
+. Instead of "java ..." use "java --javaagent:PATH/slf4j-ext-1.7.19.jar=time,verbose,level=info ..." (replace PATH with the path to the jar)
+. 使用 `java --javaagent:PATH/slf4j-ext-1.7.19.jar=time,verbose,level=info ...` (使用指向 Jar 的路径来替换 `PATH`) 代替 `java ...`
+. That's it!
+. 就这些！
+
+In some applications logging is used to trace the actual execution of the
+application as opposed to log an occasional event. One approach is using the
+extended logger to add statements as appropriately, but another is to use a tool
+which modifies compiled bytecode to add these statements! Many exist, and the
+one included in slf4j-ext is not intended to compete with these, but merely
+provide a quick way to get very basic trace information from a given application.
+
+在一些应用中，日志是用于追踪程序实际执行情况的，而不是用于记录偶然发生的事情。一种实现方
+式是使用扩展日志在程序适当的地方添加语句；但还有一种方式，是使用工具通过修改编译后的字节
+码的方式来添加语句。还有其他很多方式存在，当时包含在 slf4j-ext 中的并不是为比较而生的。
+这只是提供了一个方法，在既定程序中，快速获取基本的追踪信息。
+
+Java 5 added the Java Instrumentation mechanism, which allows you to provide "Java
+agents" that can inspect and modify the byte code of the classes as they are loaded.
+This allows the original class files to remain unchanged, and the transformations
+done on the byte codes depend on the needs at launch time.
+
+在 Java 5 中，增加了 Instrumentation 机制，这个机制提供了 Java 代理（agent）功能，它
+允许你在字节码加载时，检查和修改字节码。这就可以让原来的类文件保存不变，这种字节码转换只
+是在需要加载时才进行。
+
+[source,java]
+.众所周知的 “Hello World” 示例:
+----
+public class HelloWorld {
+  public static void main(String args[]) {
+    System.out.println("Hello World");
+  }
+}
+----
+
+一个典型的转换入下: (import 语句别忽略)
+
+[source,java]
+----
+public class LoggingHelloWorld {
+  final static Logger _log = LoggerFactory.getLogger(LoggingHelloWorld.class.getName());
+
+  public static void main(String args[]) {
+    if (_log.isInfoEnabled()) {
+      _log.info("> main(args=" + Arrays.asList(args) + ")");
+    }
+    System.out.println("Hello World");
+    if (_log.isInfoEnabled()) {
+      _log.info("< main()");
+    }
+  }
+}
+----
+
+which in turn produces the following result when run similar to "java LoggingHelloWorld 1 2 3 4":
+
+当执行类似 `java LoggingHelloWorld 1 2 3 4` 时，输出也大致如下：
+
+[source]
+----
+1 [main] INFO LoggingHelloWorld - > main(args=[1, 2, 3, 4])
+Hello World
+1 [main] INFO LoggingHelloWorld - < main()
+----
+
+The same effect could have been had by using this command (with the relative path to javassist.jar and slf4j-ext-1.7.19.jar being ../jars):
+
+可以使用下面的命令，来达到同样的效果（javassist.jar 和 slf4j-ext-1.7.19.jar 放在了相对路径 `../jars` 中）
+
+[source]
+----
+java -javaagent:../jars/slf4j-ext-1.7.19.jar HelloWorld 1 2 3 4
+----
+
+==== 如何使用
+
+The javaagent may take one or more options separated by comma. The following
+options are currently supported:
+
+`javaagent` 可以指定一到多个使用逗号分割的选项。所支持的选项如下：
+
+level=X::
+  The log level to use for the generated log statements. X is one of "info", "debug" or "trace". Default is "info".
++
+对于生成日志语句所使用的日志级别。其中 `X` 可取的值为： `info`、`debug`、`trace`。默认的级别为：`info`。
+time::
+  Print out the current date at program start, and again when the program ends plus the execution time in milliseconds.
++
+打印出程序启动的当前日期，并且在程序结尾再输出以毫秒计算的程序执行时间。
+verbose::
+  Print out when a class is processed as part of being loaded
++
+打印出当一个类被装载部分的处理
+ignore=X:Y:...::
+  (Advanced) Provide full list of colon separated prefixes of class names NOT to
+  add logging to. The default list is "org/slf4j/:ch/qos/logback/:org/apache/log4j/".
+  This does not override the fact that a class must be able to access the slf4j-api
+  classes in order to do logging, so if these classes are not visible to a given
+  class it is not instrumented.
++
+（高级特性）提供不不需要输出日志的类名前缀，使用冒号分割。默认的列表为：`org/slf4j/:ch/qos/logback/:org/apache/log4j/`。
+这还有一个不言自明的事实就是，为了能够输出日志，类必须能够访问 `slf4j-api` 的类，如果这
+些类不能访问给点的类，则肯定不能重塑。
+
+Some classes may misbehave when being rendered with "object.toString()" so they
+may be explicitly disabled in the logback configuration file permanently. For
+instance the ToStringBuilder in the Apache Jakarta commons lang package is a prime
+candidate for this. For logback add this snippet to logback.xml:
+
+一些类使用 `object.toString()` 进行呈现时，也许变现行为不当。所以，应该在 logback 配
+置文件明确声明日志不可用。在 Apache Jakarta commons lang 包中的 `ToStringBuilder` 就
+是一个极好的例子。对于 logback，可以将下面这个代码片段添加到 logback.xml 中：
+
+[source,xml]
+----
+<logger name="org.apache.commons.lang.builder" level="OFF" />
+----
+
+Note: These are not finalized yet, and may change.
+
+NOTE: 这些还没有最终确定，也许还可能会变。
+
+==== jar 文件的存放位置
+
+The javassist library is used for the actual byte code manipulation and must be
+available to be able to add any logging statements. slf4j-ext-1.7.19 has been
+configured to look for the following:
+
+javassist 库是用来实际进行字节码操纵的，为了添加任意的日志语句，它必须可用。slf4j-ext-1.7.19
+可以像下面这样进行配置：
+
+* "javassist-3.4.GA.jar" relatively to slf4j-ext-1.7.19.jar as would be if Maven
+ had downloaded both from the repository and slf4j-ext-1.7.19.jar was referenced
+ directly in the Maven repository in the "-javaagent"-argument.
+* “javassist-3.4.GA.jar” 和 “slf4j-ext-1.7.19.jar” 可以使用 Maven 从仓库下载。而且，
+“slf4j-ext-1.7.19.jar” 在 Maven 库中，直接以 “-javaagent” 参数引用。
+* "javassist-3.4.GA.jar" in the same directory as slf4j-ext
+* “javassist-3.4.GA.jar” 和 “slf4j-ext” 在同一个目录下。
+
+A warning message is printed if the javassist library was not found by the agent,
+and options requiring byte code transformations will not work.
+
+当 javassist 没有被代理发现的话，会打印出警告信息。并且指定的字节码转换也不会工作。
+
+==== 其它注意事项
+
+* A java agent is not invoked on any classes already loaded by the class loader.
+* Java 代理不能用于已经被类加载器加载过的任何类。
+* Exceptions in the java agent that would normally have been printed, may be
+silently swallowed by the JVM.
+* Java 代理中的异常通常会被打印出来，也可能被 Java 虚拟机巧巧吞下。
+* The javaagent only logs to System.err.
+* Java 代理只会打印到错误输出（System.err）。
+* The name of the logger variable is fixed (to a value unlikely to be used) so
+if that name is already used, a failure occurs. This should be changed to
+determine an unused name and use that instead.
+* 日志名称变量是固定的（似乎也没有太大的利用价值），所以，如果这个名字被使用了，将会发生
+错误。这样确定一个没有被使用的名字，然后使用它。
+* Empty methods are not instrumented (an incorrect check for an interface).
+They should be
+* 空方法不会被重塑。（针对接口的正确性检查）
+
+(The agent is an adaption of the java.util.logging version described in http://today.java.net/pub/a/today/2008/04/24/add-logging-at-class-load-time-with-instrumentation.html)
+
+（Java 代理是 `java.util.logging` 版本的一种适配。具体描述在 link:http://today.java.net/pub/a/today/2008/04/24/add-logging-at-class-load-time-with-instrumentation.html[]。）
